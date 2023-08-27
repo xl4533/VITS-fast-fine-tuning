@@ -232,12 +232,12 @@ class PosteriorEncoder(nn.Module):
     self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
   def forward(self, x, x_lengths, g=None):
-    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)
+    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)#[b,1,x_length]
     x = self.pre(x) * x_mask
     x = self.enc(x, x_mask, g=g)
     stats = self.proj(x) * x_mask
     m, logs = torch.split(stats, self.out_channels, dim=1)
-    z = (m + torch.randn_like(m) * torch.exp(logs)) * x_mask
+    z = (m + torch.randn_like(m) * torch.exp(logs)) * x_mask #采样出来的隐变量z
     return z, m, logs, x_mask
 
 
@@ -458,16 +458,16 @@ class SynthesizerTrn(nn.Module):
 
   def forward(self, x, x_lengths, y, y_lengths, sid=None):
 
-    x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
+    x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)#输入的x是文本编码，x_lengths是文本的真实长度。输出的x是预测的隐变量f(z)[符合正态分布],m_p是均值，logs_p是对数标准差，x_mask是真实文本长度的掩码
     if self.n_speakers > 0:
       g = self.emb_g(sid).unsqueeze(-1) # [b, h, 1]
     else:
       g = None
 
-    z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
-    z_p = self.flow(z, y_mask, g=g)
+    z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)#输入的y为语音数据的线性谱，y_length为真实的线性谱长度。输出的z为隐变量，m_q为均值，logs_q为对数标准差，y_mask是真实频谱长度
+    z_p = self.flow(z, y_mask, g=g)#z_p主要用于计算KL损失，此处的flow可以理解为逆flow
 
-    with torch.no_grad():
+    with torch.no_grad():#使用动态规划计算MAS
       # negative cross-entropy
       s_p_sq_r = torch.exp(-2 * logs_p) # [b, d, t]
       neg_cent1 = torch.sum(-0.5 * math.log(2 * math.pi) - logs_p, [1], keepdim=True) # [b, 1, t_s]
@@ -480,7 +480,7 @@ class SynthesizerTrn(nn.Module):
       attn = monotonic_align.maximum_path(neg_cent, attn_mask.squeeze(1)).unsqueeze(1).detach()
 
     w = attn.sum(2)
-    if self.use_sdp:
+    if self.use_sdp:#使用随机时长预测器
       l_length = self.dp(x, x_mask, w, g=g)
       l_length = l_length / torch.sum(x_mask)
     else:

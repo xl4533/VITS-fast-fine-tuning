@@ -20,7 +20,7 @@ def convert_pad_shape(pad_shape):
   pad_shape = [item for sublist in l for item in sublist]
   return pad_shape
 
-
+#lst是一个数字的列表，将item列表元素中间，头尾也要
 def intersperse(lst, item):
   result = [item] * (len(lst) * 2 + 1)
   result[1::2] = lst

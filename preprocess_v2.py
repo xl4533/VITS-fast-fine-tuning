@@ -7,7 +7,7 @@ sys.setrecursionlimit(500000)  # Fix the error message of RecursionError: maximu
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--add_auxiliary_data", type=bool, help="Whether to add extra data as fine-tuning helper")
-    parser.add_argument("--languages", default="CJE")
+    parser.add_argument("--languages", default="C")
     args = parser.parse_args()
     if args.languages == "CJE":
         langs = ["[ZH]", "[JA]", "[EN]"]
@@ -30,7 +30,10 @@ if __name__ == "__main__":
     # Get all speaker names
     speakers = []
     for line in new_annos:
-        path, speaker, text = line.split("|")
+        try:
+            path, speaker, text = line.split("|")
+        except:
+            continue
         if speaker not in speakers:
             speakers.append(speaker)
     assert (len(speakers) != 0), "No audio file found. Please check your uploaded file structure."
@@ -135,7 +138,10 @@ if __name__ == "__main__":
 
         cleaned_new_annos = []
         for i, line in enumerate(new_annos):
-            path, speaker, txt = line.split("|")
+            try:
+                path, speaker, txt = line.split("|")
+            except:
+                continue
             if len(txt) > 150:
                 continue
             cleaned_text = text._clean_text(txt, hps['data']['text_cleaners']).replace("[ZH]", "")

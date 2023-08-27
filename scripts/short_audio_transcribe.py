@@ -31,8 +31,8 @@ def transcribe_one(audio_path):
     return lang, result.text
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--languages", default="CJE")
-    parser.add_argument("--whisper_size", default="medium")
+    parser.add_argument("--languages", default="C")
+    parser.add_argument("--whisper_size", default="small")
     args = parser.parse_args()
     if args.languages == "CJE":
         lang2token = {
@@ -63,6 +63,7 @@ if __name__ == "__main__":
     processed_files = 0
     for speaker in speaker_names:
         for i, wavfile in enumerate(list(os.walk(parent_dir + speaker))[0][2]):
+            #print(f"Processed: {processed_files}/{total_files}")
             # try to load file as audio
             if wavfile.startswith("processed_"):
                 continue
@@ -77,7 +78,12 @@ if __name__ == "__main__":
                 save_path = parent_dir + speaker + "/" + f"processed_{i}.wav"
                 torchaudio.save(save_path, wav, target_sr, channels_first=True)
                 # transcribe text
-                lang, text = transcribe_one(save_path)
+                #lang, text = transcribe_one(save_path)
+                with open((parent_dir + speaker + "/" + wavfile).replace('.wav','.lab'),'r',encoding='utf-8') as f:
+                    text = f.read()
+                print(text)
+                lang = 'zh'
+
                 if lang not in list(lang2token.keys()):
                     print(f"{lang} not supported, ignoring\n")
                     continue

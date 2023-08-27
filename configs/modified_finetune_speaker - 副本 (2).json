@@ -10,8 +10,8 @@
       0.99
     ],
     "eps": 1e-09,
-    "batch_size": 1,
-    "fp16_run": false,
+    "batch_size": 4,
+    "fp16_run": true,
     "lr_decay": 0.999875,
     "segment_size": 8192,
     "init_lr_ratio": 1,
@@ -34,7 +34,7 @@
     "mel_fmin": 0.0,
     "mel_fmax": null,
     "add_blank": true,
-    "n_speakers": 1,
+    "n_speakers": 3,
     "cleaned_text": true
   },
   "model": {
@@ -156,6 +156,8 @@
     " "
   ],
   "speakers": {
-    "\u516b\u91cd\u795e\u5b50": 0
+    "specialweek": 0,
+    "vctk": 1,
+    "zhongli": 2
   }
 }
