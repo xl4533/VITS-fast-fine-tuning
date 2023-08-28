@@ -132,7 +132,7 @@ class DurationPredictor(nn.Module):
     return x * x_mask
 
 
-class TextEncoder(nn.Module):
+class TextEncoder(nn.Module):#文本编码器
   def __init__(self,
       n_vocab,
       out_channels,
@@ -143,17 +143,17 @@ class TextEncoder(nn.Module):
       kernel_size,
       p_dropout):
     super().__init__()
-    self.n_vocab = n_vocab
-    self.out_channels = out_channels
-    self.hidden_channels = hidden_channels
-    self.filter_channels = filter_channels
-    self.n_heads = n_heads
-    self.n_layers = n_layers
-    self.kernel_size = kernel_size
-    self.p_dropout = p_dropout
+    self.n_vocab = n_vocab #音标数量
+    self.out_channels = out_channels #输出通道数
+    self.hidden_channels = hidden_channels #隐变量通道数
+    self.filter_channels = filter_channels #过滤器通道数
+    self.n_heads = n_heads #多头注意力，即多个self attention
+    self.n_layers = n_layers #堆叠层数
+    self.kernel_size = kernel_size #卷积kernel大小
+    self.p_dropout = p_dropout #dropout
 
-    self.emb = nn.Embedding(n_vocab, hidden_channels)
-    nn.init.normal_(self.emb.weight, 0.0, hidden_channels**-0.5)
+    self.emb = nn.Embedding(n_vocab, hidden_channels)#embedding模块，用于将文本转化为向量，索引范围为0~n_vocab-1，每个嵌入向量维度为h
+    nn.init.normal_(self.emb.weight, 0.0, hidden_channels**-0.5)#初始化embedding超参数
 
     self.encoder = attentions.Encoder(
       hidden_channels,
@@ -161,19 +161,19 @@ class TextEncoder(nn.Module):
       n_heads,
       n_layers,
       kernel_size,
-      p_dropout)
-    self.proj= nn.Conv1d(hidden_channels, out_channels * 2, 1)
+      p_dropout)#定义多头注意力编码器
+    self.proj= nn.Conv1d(hidden_channels, out_channels * 2, 1)#定义一个1维卷积，用于通道升维，预测f(z)[符合高斯分布]的均值和对数标准差
 
-  def forward(self, x, x_lengths):
+  def forward(self, x, x_lengths):#x为输入文本，形状为[b,t]，x_lenghts为文本真实长度，形状为[b]
     x = self.emb(x) * math.sqrt(self.hidden_channels) # [b, t, h]
     x = torch.transpose(x, 1, -1) # [b, h, t]
-    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)
+    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)#x_mask形状为[b,1,t]
 
-    x = self.encoder(x * x_mask, x_mask)
-    stats = self.proj(x) * x_mask
+    x = self.encoder(x * x_mask, x_mask)#对掩码后的文本向量进行编码
+    stats = self.proj(x) * x_mask#对编码出来的向量在通道维度进行扩充为2倍，并应用x_mask生成掩码后的向量。
 
-    m, logs = torch.split(stats, self.out_channels, dim=1)
-    return x, m, logs, x_mask
+    m, logs = torch.split(stats, self.out_channels, dim=1)#对扩充后的向量在通道维度进行切分，一半用来预测f(z)[符合高斯分布]的均值，一半用来预测对数标准差
+    return x, m, logs, x_mask#此处的x表示编码后的文本向量，仅是中间输出，后续用于随机时长预测器的输入。m表示f(z)的均值，logs表示f(z)的对数标准差，x_mask为文本真实长度掩码矩阵
 
 
 class ResidualCouplingBlock(nn.Module):
@@ -228,8 +228,8 @@ class PosteriorEncoder(nn.Module):
     self.gin_channels = gin_channels
 
     self.pre = nn.Conv1d(in_channels, hidden_channels, 1)#in_channels为spec_channels，hidden_channels为超参数
-    self.enc = modules.WN(hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels=gin_channels)
-    self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
+    self.enc = modules.WN(hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels=gin_channels)#WaveNet网络结构，用于对线性谱进行隐变量编码
+    self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)#1维卷积，用于扩张隐变量z的通道数，用于预测z[符合正态分布]的均值和对数标准差
 
   def forward(self, x, x_lengths, g=None):#x是线性谱，形状为[b, spec_channels(默认值是513), 当前batch最大的数据长度x_maxlen],x_length是线性谱真实长度，形状为[b]
     x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)#真实线性谱长度的掩码，形状为[b,1,x_maxlen]
@@ -415,8 +415,8 @@ class SynthesizerTrn(nn.Module):#生成器
     **kwargs):
 
     super().__init__()
-    self.n_vocab = n_vocab
-    self.spec_channels = spec_channels
+    self.n_vocab = n_vocab #音标数量
+    self.spec_channels = spec_channels #频谱维度spec_channels(默认值是513)
     self.inter_channels = inter_channels
     self.hidden_channels = hidden_channels
     self.filter_channels = filter_channels

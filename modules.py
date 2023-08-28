@@ -128,12 +128,12 @@ class WN(torch.nn.Module):
       self.cond_layer = torch.nn.utils.weight_norm(cond_layer, name='weight')
 
     for i in range(n_layers):
-      dilation = dilation_rate ** i
-      padding = int((kernel_size * dilation - dilation) / 2)
+      dilation = dilation_rate ** i#空洞率
+      padding = int((kernel_size * dilation - dilation) / 2)#卷积padding
       in_layer = torch.nn.Conv1d(hidden_channels, 2*hidden_channels, kernel_size,
-                                 dilation=dilation, padding=padding)
-      in_layer = torch.nn.utils.weight_norm(in_layer, name='weight')
-      self.in_layers.append(in_layer)
+                                 dilation=dilation, padding=padding)#1维卷积
+      in_layer = torch.nn.utils.weight_norm(in_layer, name='weight')#1维卷积参数权重归一化
+      self.in_layers.append(in_layer)#将初始化好的该层卷积留存，用于组装WN网络
 
       # last one is not necessary
       if i < n_layers - 1:
@@ -141,8 +141,8 @@ class WN(torch.nn.Module):
       else:
         res_skip_channels = hidden_channels
 
-      res_skip_layer = torch.nn.Conv1d(hidden_channels, res_skip_channels, 1)
-      res_skip_layer = torch.nn.utils.weight_norm(res_skip_layer, name='weight')
+      res_skip_layer = torch.nn.Conv1d(hidden_channels, res_skip_channels, 1)#定义残差网路
+      res_skip_layer = torch.nn.utils.weight_norm(res_skip_layer, name='weight')#残差网路权重归一化
       self.res_skip_layers.append(res_skip_layer)
 
   def forward(self, x, x_mask, g=None, **kwargs):

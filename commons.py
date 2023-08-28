@@ -121,11 +121,11 @@ def shift_1d(x):
   return x
 
 
-def sequence_mask(length, max_length=None):
+def sequence_mask(length, max_length=None):#length形状为[b]
   if max_length is None:
     max_length = length.max()
-  x = torch.arange(max_length, dtype=length.dtype, device=length.device)
-  return x.unsqueeze(0) < length.unsqueeze(1)
+  x = torch.arange(max_length, dtype=length.dtype, device=length.device)#x形状为[t]
+  return x.unsqueeze(0) < length.unsqueeze(1)#x形状为[1,b],length形状为[t,1],返回[b,t]形状的布尔矩阵
 
 
 def generate_path(duration, mask):
