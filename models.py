@@ -14,7 +14,7 @@ from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 from commons import init_weights, get_padding
 
 
-class StochasticDurationPredictor(nn.Module):
+class StochasticDurationPredictor(nn.Module):#随机时长预测器
   def __init__(self, in_channels, filter_channels, kernel_size, p_dropout, n_flows=4, gin_channels=0):
     super().__init__()
     filter_channels = in_channels # it needs to be removed from future version.
@@ -83,7 +83,7 @@ class StochasticDurationPredictor(nn.Module):
         z, logdet = flow(z, x_mask, g=x, reverse=reverse)
         logdet_tot = logdet_tot + logdet
       nll = torch.sum(0.5 * (math.log(2*math.pi) + (z**2)) * x_mask, [1,2]) - logdet_tot
-      return nll + logq # [b]
+      return nll + logq # [b,]
     else:
       flows = list(reversed(self.flows))
       flows = flows[:-2] + [flows[-1]] # remove a useless vflow
@@ -227,18 +227,18 @@ class PosteriorEncoder(nn.Module):
     self.n_layers = n_layers
     self.gin_channels = gin_channels
 
-    self.pre = nn.Conv1d(in_channels, hidden_channels, 1)
+    self.pre = nn.Conv1d(in_channels, hidden_channels, 1)#in_channels为spec_channels，hidden_channels为超参数
     self.enc = modules.WN(hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels=gin_channels)
     self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
-  def forward(self, x, x_lengths, g=None):
-    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)#[b,1,x_length]
-    x = self.pre(x) * x_mask
-    x = self.enc(x, x_mask, g=g)
-    stats = self.proj(x) * x_mask
-    m, logs = torch.split(stats, self.out_channels, dim=1)
-    z = (m + torch.randn_like(m) * torch.exp(logs)) * x_mask #采样出来的隐变量z
-    return z, m, logs, x_mask
+  def forward(self, x, x_lengths, g=None):#x是线性谱，形状为[b, spec_channels(默认值是513), 当前batch最大的数据长度x_maxlen],x_length是线性谱真实长度，形状为[b]
+    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)#真实线性谱长度的掩码，形状为[b,1,x_maxlen]
+    x = self.pre(x) * x_mask#[b, hidden_channels, x_maxlen] * [b, 1, x_maxlen]，按位相乘。将输入x掩盖掉无效数据
+    x = self.enc(x, x_mask, g=g)#多层卷积提取特征
+    stats = self.proj(x) * x_mask#[b, hidden_channels * 2, x_maxlen] * [b, 1, x_maxlen]
+    m, logs = torch.split(stats, self.out_channels, dim=1)#在输出通道维度将特征切分成两部分，m用来表达隐变量z所服从的高斯分布的均值，logs用来表示对数标准差
+    z = (m + torch.randn_like(m) * torch.exp(logs)) * x_mask #从预测出的高斯分布中，使用重参数化采样出来的隐变量z
+    return z, m, logs, x_mask#z表示隐变量，m表示隐变量z所服从的高斯分布的均值，logs表示对数标准差，x_mask表示真实线性谱长度的掩码
 
 
 class Generator(torch.nn.Module):
@@ -387,7 +387,7 @@ class MultiPeriodDiscriminator(torch.nn.Module):
 
 
 
-class SynthesizerTrn(nn.Module):
+class SynthesizerTrn(nn.Module):#生成器
   """
   Synthesizer for Training
   """
@@ -434,7 +434,7 @@ class SynthesizerTrn(nn.Module):
     self.n_speakers = n_speakers
     self.gin_channels = gin_channels
 
-    self.use_sdp = use_sdp
+    self.use_sdp = use_sdp#是否使用随机时长预测器
 
     self.enc_p = TextEncoder(n_vocab,
         inter_channels,
@@ -443,21 +443,21 @@ class SynthesizerTrn(nn.Module):
         n_heads,
         n_layers,
         kernel_size,
-        p_dropout)
-    self.dec = Generator(inter_channels, resblock, resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates, upsample_initial_channel, upsample_kernel_sizes, gin_channels=gin_channels)
-    self.enc_q = PosteriorEncoder(spec_channels, inter_channels, hidden_channels, 5, 1, 16, gin_channels=gin_channels)
-    self.flow = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 4, gin_channels=gin_channels)
+        p_dropout)#文本编码器
+    self.dec = Generator(inter_channels, resblock, resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates, upsample_initial_channel, upsample_kernel_sizes, gin_channels=gin_channels)#隐变量z的解码器
+    self.enc_q = PosteriorEncoder(spec_channels, inter_channels, hidden_channels, 5, 1, 16, gin_channels=gin_channels)#后验编码器，预测隐变量z分布的均值和对数标准差，并从分布中取值z
+    self.flow = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 4, gin_channels=gin_channels)#标准化流flow，用于将先验编码器生成的f(z)[符合正态分布]映射到一个更复杂的分布
 
-    if use_sdp:
-      self.dp = StochasticDurationPredictor(hidden_channels, 192, 3, 0.5, 4, gin_channels=gin_channels)
+    if use_sdp:#是否使用了随机时长预测器
+      self.dp = StochasticDurationPredictor(hidden_channels, 192, 3, 0.5, 4, gin_channels=gin_channels)#定义随机时长预测器
     else:
-      self.dp = DurationPredictor(hidden_channels, 256, 3, 0.5, gin_channels=gin_channels)
+      self.dp = DurationPredictor(hidden_channels, 256, 3, 0.5, gin_channels=gin_channels)#定义时长预测器
 
-    if n_speakers >= 1:
-      self.emb_g = nn.Embedding(n_speakers, gin_channels)
+    if n_speakers >= 1:#判断是否为多说话人
+      self.emb_g = nn.Embedding(n_speakers, gin_channels)#定义说话人信息的编码器
 
   def forward(self, x, x_lengths, y, y_lengths, sid=None):
-
+    #x的形状为[b,T,当前批次最大的文本长度]
     x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)#输入的x是文本编码，x_lengths是文本的真实长度。输出的x是预测的隐变量f(z)[符合正态分布],m_p是均值，logs_p是对数标准差，x_mask是真实文本长度的掩码
     if self.n_speakers > 0:
       g = self.emb_g(sid).unsqueeze(-1) # [b, h, 1]
@@ -479,9 +479,9 @@ class SynthesizerTrn(nn.Module):
       attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
       attn = monotonic_align.maximum_path(neg_cent, attn_mask.squeeze(1)).unsqueeze(1).detach()
 
-    w = attn.sum(2)
+    w = attn.sum(2)#用于后续随机时长预测器的计算
     if self.use_sdp:#使用随机时长预测器
-      l_length = self.dp(x, x_mask, w, g=g)
+      l_length = self.dp(x, x_mask, w, g=g)#随机时长预测其推导
       l_length = l_length / torch.sum(x_mask)
     else:
       logw_ = torch.log(w + 1e-6) * x_mask
@@ -489,11 +489,11 @@ class SynthesizerTrn(nn.Module):
       l_length = torch.sum((logw - logw_)**2, [1,2]) / torch.sum(x_mask) # for averaging
 
     # expand prior
-    m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)
-    logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)
+    m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)#对先验编码器的输出进行对齐，与后验编码器的隐变量z的形状保持一致，此处扩充均值
+    logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)#此处扩充先验编码器的对数标准差
 
-    z_slice, ids_slice = commons.rand_slice_segments(z, y_lengths, self.segment_size)
-    o = self.dec(z_slice, g=g)
+    z_slice, ids_slice = commons.rand_slice_segments(z, y_lengths, self.segment_size)#对输出的隐变量z进行随机采样切分
+    o = self.dec(z_slice, g=g)#对切分出的隐变量z进行解码，生成波形
     return o, l_length, attn, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q)
 
   def infer(self, x, x_lengths, sid=None, noise_scale=1, length_scale=1, noise_scale_w=1., max_len=None):

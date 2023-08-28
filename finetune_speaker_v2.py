@@ -229,14 +229,14 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
         loss_fm = feature_loss(fmap_r, fmap_g)#feature map的loss
         loss_gen, losses_gen = generator_loss(y_d_hat_g)#生成器的对抗loss
-        loss_gen_all = loss_gen + loss_fm + loss_mel + loss_dur + loss_kl
+        loss_gen_all = loss_gen + loss_fm + loss_mel + loss_dur + loss_kl#总的损失，优化该损失即可进行训练
     #生成器更新
-    optim_g.zero_grad()
-    scaler.scale(loss_gen_all).backward()
-    scaler.unscale_(optim_g)
-    grad_norm_g = commons.clip_grad_value_(net_g.parameters(), None)
-    scaler.step(optim_g)
-    scaler.update()
+    optim_g.zero_grad()#清空生成器模块的优化器梯度缓冲区
+    scaler.scale(loss_gen_all).backward()#scaler是一个缩放器对象，用于对损失进行缩放。确保梯度不会因为数值过大或过小而出现不稳定的情况。并执行反向传播计算梯度
+    scaler.unscale_(optim_g)#unscale_方法的作用是去除之前对梯度的缩放，将其恢复到原始的梯度值。对优化器对象的梯度进行去缩放，然后使用原始的梯度值进行权重更新。
+    grad_norm_g = commons.clip_grad_value_(net_g.parameters(), None)#将生成器的参数和梯度传递给clip_grad_value_函数进行裁剪操作。裁剪梯度的目的是为了控制梯度的幅度，防止梯度爆炸或梯度消失的问题。
+    scaler.step(optim_g)#对优化器进行步长操作，使用缩放后的梯度进行权重更新
+    scaler.update()#更新模型权重
 
     if rank==0:#主进程上的loss打印，记录和模型验证，保存
       if global_step % hps.train.log_interval == 0:
