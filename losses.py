@@ -3,7 +3,7 @@ from torch.nn import functional as F
 
 import commons
 
-#计算对抗训练中生成波形和真是波形在判别器中间特征之间的距离损失
+#计算对抗训练中生成波形和真实波形在判别器中间特征之间的距离损失
 def feature_loss(fmap_r, fmap_g):
   loss = 0
   for dr, dg in zip(fmap_r, fmap_g):#遍历真是波形和预测波形在判别器每层的特征图
@@ -30,7 +30,7 @@ def discriminator_loss(disc_real_outputs, disc_generated_outputs):
 
   return loss, r_losses, g_losses
 
-#生成器的对抗损失，就是将生成器生成的波形经过判别器后的输出与i计算距离损失，L2损失
+#生成器的对抗损失，就是将生成器生成的波形经过判别器后的输出与1计算距离损失，L2损失
 def generator_loss(disc_outputs):
   loss = 0
   gen_losses = []

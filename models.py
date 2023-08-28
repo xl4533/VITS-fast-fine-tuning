@@ -296,7 +296,7 @@ class Generator(torch.nn.Module):
             l.remove_weight_norm()
 
 
-class DiscriminatorP(torch.nn.Module):
+class DiscriminatorP(torch.nn.Module):#判别器P
     def __init__(self, period, kernel_size=5, stride=3, use_spectral_norm=False):
         super(DiscriminatorP, self).__init__()
         self.period = period
@@ -333,7 +333,7 @@ class DiscriminatorP(torch.nn.Module):
         return x, fmap
 
 
-class DiscriminatorS(torch.nn.Module):
+class DiscriminatorS(torch.nn.Module):#判别器S
     def __init__(self, use_spectral_norm=False):
         super(DiscriminatorS, self).__init__()
         norm_f = weight_norm if use_spectral_norm == False else spectral_norm
@@ -351,14 +351,14 @@ class DiscriminatorS(torch.nn.Module):
         fmap = []
 
         for l in self.convs:
-            x = l(x)
-            x = F.leaky_relu(x, modules.LRELU_SLOPE)
-            fmap.append(x)
+            x = l(x)#卷积操作
+            x = F.leaky_relu(x, modules.LRELU_SLOPE)#经过leaky_relu激活函数
+            fmap.append(x)#保存中间输出的特征图
         x = self.conv_post(x)
         fmap.append(x)
         x = torch.flatten(x, 1, -1)
 
-        return x, fmap
+        return x, fmap#返回判别结果及中间特征输出
 
 
 class MultiPeriodDiscriminator(torch.nn.Module):
@@ -376,12 +376,12 @@ class MultiPeriodDiscriminator(torch.nn.Module):
         fmap_rs = []
         fmap_gs = []
         for i, d in enumerate(self.discriminators):
-            y_d_r, fmap_r = d(y)
-            y_d_g, fmap_g = d(y_hat)
-            y_d_rs.append(y_d_r)
-            y_d_gs.append(y_d_g)
-            fmap_rs.append(fmap_r)
-            fmap_gs.append(fmap_g)
+            y_d_r, fmap_r = d(y)#使用第i个判别器对真实波形y进行判别
+            y_d_g, fmap_g = d(y_hat)#使用第i个判别器对生成波形y_hat进行判别
+            y_d_rs.append(y_d_r)#保存对真实波形的判断结果
+            y_d_gs.append(y_d_g)#保持对生成波形的判断结果
+            fmap_rs.append(fmap_r)#保存真实波形的中间特征
+            fmap_gs.append(fmap_g)#保存生成波形的中间特征
 
         return y_d_rs, y_d_gs, fmap_rs, fmap_gs
 
