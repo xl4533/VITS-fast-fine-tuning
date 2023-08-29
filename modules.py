@@ -12,10 +12,9 @@ from torch.nn.utils import weight_norm, remove_weight_norm
 import commons
 from commons import init_weights, get_padding
 from transforms import piecewise_rational_quadratic_transform
-
+from attentions import Encoder
 
 LRELU_SLOPE = 0.1
-
 
 class LayerNorm(nn.Module):
   def __init__(self, channels, eps=1e-5):
@@ -30,8 +29,7 @@ class LayerNorm(nn.Module):
     x = x.transpose(1, -1)
     x = F.layer_norm(x, (self.channels,), self.gamma, self.beta, self.eps)
     return x.transpose(1, -1)
-
- 
+    
 class ConvReluNorm(nn.Module):
   def __init__(self, in_channels, hidden_channels, out_channels, kernel_size, n_layers, p_dropout):
     super().__init__()
@@ -69,7 +67,7 @@ class ConvReluNorm(nn.Module):
 
 class DDSConv(nn.Module):
   """
-  Dilated and Depth-Separable Convolution
+  Dialted and Depth-Separable Convolution
   """
   def __init__(self, channels, kernel_size, n_layers, p_dropout=0.):
     super().__init__()
@@ -128,12 +126,12 @@ class WN(torch.nn.Module):
       self.cond_layer = torch.nn.utils.weight_norm(cond_layer, name='weight')
 
     for i in range(n_layers):
-      dilation = dilation_rate ** i#空洞率
-      padding = int((kernel_size * dilation - dilation) / 2)#卷积padding
+      dilation = dilation_rate ** i
+      padding = int((kernel_size * dilation - dilation) / 2)
       in_layer = torch.nn.Conv1d(hidden_channels, 2*hidden_channels, kernel_size,
-                                 dilation=dilation, padding=padding)#1维卷积
-      in_layer = torch.nn.utils.weight_norm(in_layer, name='weight')#1维卷积参数权重归一化
-      self.in_layers.append(in_layer)#将初始化好的该层卷积留存，用于组装WN网络
+                                 dilation=dilation, padding=padding)
+      in_layer = torch.nn.utils.weight_norm(in_layer, name='weight')
+      self.in_layers.append(in_layer)
 
       # last one is not necessary
       if i < n_layers - 1:
@@ -141,8 +139,8 @@ class WN(torch.nn.Module):
       else:
         res_skip_channels = hidden_channels
 
-      res_skip_layer = torch.nn.Conv1d(hidden_channels, res_skip_channels, 1)#定义残差网路
-      res_skip_layer = torch.nn.utils.weight_norm(res_skip_layer, name='weight')#残差网路权重归一化
+      res_skip_layer = torch.nn.Conv1d(hidden_channels, res_skip_channels, 1)
+      res_skip_layer = torch.nn.utils.weight_norm(res_skip_layer, name='weight')
       self.res_skip_layers.append(res_skip_layer)
 
   def forward(self, x, x_mask, g=None, **kwargs):
@@ -269,7 +267,7 @@ class Log(nn.Module):
 
 class Flip(nn.Module):
   def forward(self, x, *args, reverse=False, **kwargs):
-    x = torch.flip(x, [1])#x的形状为[b,h,t],torch.flip将x沿着第1维度进行了数据翻转
+    x = torch.flip(x, [1])
     if not reverse:
       logdet = torch.zeros(x.size(0)).to(dtype=x.dtype, device=x.device)
       return x, logdet
@@ -322,12 +320,12 @@ class ResidualCouplingLayer(nn.Module):
     self.post.bias.data.zero_()
 
   def forward(self, x, x_mask, g=None, reverse=False):
-    x0, x1 = torch.split(x, [self.half_channels]*2, 1)#x的形状为[b,h,t]，沿着第1维度进行切分，切分成了两个[b,h/2,t]的矩阵
-    h = self.pre(x0) * x_mask#此处x_mask形状为[b,1,t],对x0进行编码，之后使用mask掩盖无效数据
-    h = self.enc(h, x_mask, g=g)#对编码后的x0使用WaveNet编码
-    stats = self.post(h) * x_mask#再次编码
+    x0, x1 = torch.split(x, [self.half_channels]*2, 1)
+    h = self.pre(x0) * x_mask
+    h = self.enc(h, x_mask, g=g)
+    stats = self.post(h) * x_mask
     if not self.mean_only:
-      m, logs = torch.split(stats, [self.half_channels]*2, 1)#计算均值和对数标准差
+      m, logs = torch.split(stats, [self.half_channels]*2, 1)
     else:
       m = stats
       logs = torch.zeros_like(m)
@@ -372,6 +370,70 @@ class ConvFlow(nn.Module):
     unnormalized_widths = h[..., :self.num_bins] / math.sqrt(self.filter_channels)
     unnormalized_heights = h[..., self.num_bins:2*self.num_bins] / math.sqrt(self.filter_channels)
     unnormalized_derivatives = h[..., 2 * self.num_bins:]
+
+    x1, logabsdet = piecewise_rational_quadratic_transform(x1,
+        unnormalized_widths,
+        unnormalized_heights,
+        unnormalized_derivatives,
+        inverse=reverse,
+        tails='linear',
+        tail_bound=self.tail_bound
+    )
+
+    x = torch.cat([x0, x1], 1) * x_mask
+    logdet = torch.sum(logabsdet * x_mask, [1,2])
+    if not reverse:
+        return x, logdet
+    else:
+        return x
+class TransformerCouplingLayer(nn.Module):
+  def __init__(self,
+      channels,
+      hidden_channels,
+      kernel_size,
+      n_layers,
+      n_heads,
+      p_dropout=0,
+      filter_channels=0,
+      mean_only=False,
+      wn_sharing_parameter=None,
+      gin_channels = 0
+      ):
+    assert channels % 2 == 0, "channels should be divisible by 2"
+    super().__init__()
+    self.channels = channels
+    self.hidden_channels = hidden_channels
+    self.kernel_size = kernel_size
+    self.n_layers = n_layers
+    self.half_channels = channels // 2
+    self.mean_only = mean_only
+
+    self.pre = nn.Conv1d(self.half_channels, hidden_channels, 1)
+    self.enc = Encoder(hidden_channels, filter_channels, n_heads, n_layers, kernel_size, p_dropout, isflow = True, gin_channels = gin_channels) if wn_sharing_parameter is None else wn_sharing_parameter
+    self.post = nn.Conv1d(hidden_channels, self.half_channels * (2 - mean_only), 1)
+    self.post.weight.data.zero_()
+    self.post.bias.data.zero_()
+
+  def forward(self, x, x_mask, g=None, reverse=False):
+    x0, x1 = torch.split(x, [self.half_channels]*2, 1)
+    h = self.pre(x0) * x_mask
+    h = self.enc(h, x_mask, g=g)
+    stats = self.post(h) * x_mask
+    if not self.mean_only:
+      m, logs = torch.split(stats, [self.half_channels]*2, 1)
+    else:
+      m = stats
+      logs = torch.zeros_like(m)
+
+    if not reverse:
+      x1 = m + x1 * torch.exp(logs) * x_mask
+      x = torch.cat([x0, x1], 1)
+      logdet = torch.sum(logs, [1,2])
+      return x, logdet
+    else:
+      x1 = (x1 - m) * torch.exp(-logs) * x_mask
+      x = torch.cat([x0, x1], 1)
+      return x
 
     x1, logabsdet = piecewise_rational_quadratic_transform(x1,
         unnormalized_widths,

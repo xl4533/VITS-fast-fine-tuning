@@ -8,7 +8,6 @@ import subprocess
 import numpy as np
 from scipy.io.wavfile import read
 import torch
-import regex as re
 
 MATPLOTLIB_FLAG = False
 
@@ -16,142 +15,20 @@ logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 logger = logging
 
 
-
-zh_pattern = re.compile(r'[\u4e00-\u9fa5]')
-en_pattern = re.compile(r'[a-zA-Z]')
-jp_pattern = re.compile(r'[\u3040-\u30ff\u31f0-\u31ff]')
-kr_pattern = re.compile(r'[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f\ua960-\ua97f]')
-num_pattern=re.compile(r'[0-9]')
-comma=r"(?<=[.。!！?？；;，,、:：'\"‘“”’()（）《》「」~——])"    #向前匹配但固定长度
-tags={'ZH':'[ZH]','EN':'[EN]','JP':'[JA]','KR':'[KR]'}
-
-def tag_cjke(text):
-    '''为中英日韩加tag,中日正则分不开，故先分句分离中日再识别，以应对大部分情况'''
-    sentences = re.split(r"([.。!！?？；;，,、:：'\"‘“”’()（）【】《》「」~——]+ *(?![0-9]))", text) #分句，排除小数点
-    sentences.append("")
-    sentences = ["".join(i) for i in zip(sentences[0::2],sentences[1::2])]
-    # print(sentences)
-    prev_lang=None
-    tagged_text = ""
-    for s in sentences:
-        #全为符号跳过
-        nu = re.sub(r'[\s\p{P}]+', '', s, flags=re.U).strip()   
-        if len(nu)==0:
-            continue
-        s = re.sub(r'[()（）《》「」【】‘“”’]+', '', s)
-        jp=re.findall(jp_pattern, s)
-        #本句含日语字符判断为日语
-        if len(jp)>0:  
-            prev_lang,tagged_jke=tag_jke(s,prev_lang)
-            tagged_text +=tagged_jke
-        else:
-            prev_lang,tagged_cke=tag_cke(s,prev_lang)
-            tagged_text +=tagged_cke
-    return tagged_text
-
-def tag_jke(text,prev_sentence=None):
-    '''为英日韩加tag'''
-    # 初始化标记变量
-    tagged_text = ""
-    prev_lang = None
-    tagged=0
-    # 遍历文本
-    for char in text:
-        # 判断当前字符属于哪种语言
-        if jp_pattern.match(char):
-            lang = "JP"
-        elif zh_pattern.match(char):
-            lang = "JP"
-        elif kr_pattern.match(char):
-            lang = "KR"
-        elif en_pattern.match(char):
-            lang = "EN"
-        # elif num_pattern.match(char):
-        #     lang = prev_sentence
-        else:
-            lang = None
-            tagged_text += char
-            continue
-        # 如果当前语言与上一个语言不同，就添加标记
-        if lang != prev_lang:
-            tagged=1
-            if prev_lang==None: # 开头
-                tagged_text =tags[lang]+tagged_text
-            else:
-                tagged_text =tagged_text+tags[prev_lang]+tags[lang]
-
-            # 重置标记变量
-            prev_lang = lang
-
-        # 添加当前字符到标记文本中
-        tagged_text += char
-    
-    # 在最后一个语言的结尾添加对应的标记
-    if prev_lang:
-            tagged_text += tags[prev_lang]
-    if not tagged:
-        prev_lang=prev_sentence
-        tagged_text =tags[prev_lang]+tagged_text+tags[prev_lang]
-
-    return prev_lang,tagged_text
-
-def tag_cke(text,prev_sentence=None):
-    '''为中英韩加tag'''
-    # 初始化标记变量
-    tagged_text = ""
-    prev_lang = None
-    # 是否全略过未标签
-    tagged=0
-    
-    # 遍历文本
-    for char in text:
-        # 判断当前字符属于哪种语言
-        if zh_pattern.match(char):
-            lang = "ZH"
-        elif kr_pattern.match(char):
-            lang = "KR"
-        elif en_pattern.match(char):
-            lang = "EN"
-        # elif num_pattern.match(char):
-        #     lang = prev_sentence
-        else:
-            # 略过
-            lang = None
-            tagged_text += char
-            continue
-
-        # 如果当前语言与上一个语言不同，添加标记
-        if lang != prev_lang:
-            tagged=1
-            if prev_lang==None: # 开头
-                tagged_text =tags[lang]+tagged_text
-            else:
-                tagged_text =tagged_text+tags[prev_lang]+tags[lang]
-
-            # 重置标记变量
-            prev_lang = lang
-
-        # 添加当前字符到标记文本中
-        tagged_text += char
-    
-    # 在最后一个语言的结尾添加对应的标记
-    if prev_lang:
-            tagged_text += tags[prev_lang]
-    # 未标签则继承上一句标签
-    if tagged==0:
-        prev_lang=prev_sentence
-        tagged_text =tags[prev_lang]+tagged_text+tags[prev_lang]
-    return prev_lang,tagged_text
-
-
-
-def load_checkpoint(checkpoint_path, model, optimizer=None, drop_speaker_emb=False):
+def load_checkpoint(checkpoint_path, model, optimizer=None, skip_optimizer=False):
     assert os.path.isfile(checkpoint_path)
     checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
     iteration = checkpoint_dict['iteration']
     learning_rate = checkpoint_dict['learning_rate']
-    if optimizer is not None:
+    if optimizer is not None and not skip_optimizer and checkpoint_dict['optimizer'] is not None:
         optimizer.load_state_dict(checkpoint_dict['optimizer'])
+    elif optimizer is None and not skip_optimizer:  
+    #else: #Disable this line if Infer ,and enable the line upper
+        new_opt_dict = optimizer.state_dict()
+        new_opt_dict_params = new_opt_dict['param_groups'][0]['params']
+        new_opt_dict['param_groups'] = checkpoint_dict['optimizer']['param_groups']
+        new_opt_dict['param_groups'][0]['params'] = new_opt_dict_params
+        optimizer.load_state_dict(new_opt_dict)
     saved_state_dict = checkpoint_dict['model']
     if hasattr(model, 'module'):
         state_dict = model.module.state_dict()
@@ -160,21 +37,18 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, drop_speaker_emb=Fal
     new_state_dict = {}
     for k, v in state_dict.items():
         try:
-            if k == 'emb_g.weight':
-                if drop_speaker_emb:
-                    new_state_dict[k] = v
-                    continue
-                v[:saved_state_dict[k].shape[0], :] = saved_state_dict[k]
-                new_state_dict[k] = v
-            else:
-                new_state_dict[k] = saved_state_dict[k]
+            #assert "emb_g" not in k
+            # print("load", k)
+            new_state_dict[k] = saved_state_dict[k]
+            assert saved_state_dict[k].shape == v.shape, (saved_state_dict[k].shape, v.shape)
         except:
-            logger.info("%s is not in the checkpoint" % k)
+            print("error, %s is not in the checkpoint" % k)
             new_state_dict[k] = v
     if hasattr(model, 'module'):
-        model.module.load_state_dict(new_state_dict)
+        model.module.load_state_dict(new_state_dict, strict=False)
     else:
-        model.load_state_dict(new_state_dict)
+        model.load_state_dict(new_state_dict, strict=False)
+    print("load ")
     logger.info("Loaded checkpoint '{}' (iteration {})".format(
         checkpoint_path, iteration))
     return model, optimizer, learning_rate, iteration
@@ -189,7 +63,7 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, checkpoint_path)
         state_dict = model.state_dict()
     torch.save({'model': state_dict,
                 'iteration': iteration,
-                'optimizer': optimizer.state_dict() if optimizer is not None else None,
+                'optimizer': optimizer.state_dict(),
                 'learning_rate': learning_rate}, checkpoint_path)
 
 
@@ -204,27 +78,12 @@ def summarize(writer, global_step, scalars={}, histograms={}, images={}, audios=
         writer.add_audio(k, v, global_step, audio_sampling_rate)
 
 
-def extract_digits(f):
-    digits = "".join(filter(str.isdigit, f))
-    return int(digits) if digits else -1
-
-
-def latest_checkpoint_path(dir_path, regex="G_[0-9]*.pth"):
+def latest_checkpoint_path(dir_path, regex="G_*.pth"):
     f_list = glob.glob(os.path.join(dir_path, regex))
-    f_list.sort(key=lambda f: extract_digits(f))
+    f_list.sort(key=lambda f: int("".join(filter(str.isdigit, f))))
     x = f_list[-1]
-    print(f"latest_checkpoint_path:{x}")
+    print(x)
     return x
-
-
-def oldest_checkpoint_path(dir_path, regex="G_[0-9]*.pth", preserved=4):
-    f_list = glob.glob(os.path.join(dir_path, regex))
-    f_list.sort(key=lambda f: extract_digits(f))
-    if len(f_list) > preserved:
-        x = f_list[0]
-        print(f"oldest_checkpoint_path:{x}")
-        return x
-    return ""
 
 
 def plot_spectrogram_to_numpy(spectrogram):
@@ -293,34 +152,15 @@ def load_filepaths_and_text(filename, split="|"):
     return filepaths_and_text
 
 
-def str2bool(v):
-    if isinstance(v, bool):
-        return v
-    if v.lower() in ('yes', 'true', 't', 'y', '1'):
-        return True
-    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
-        return False
-    else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
-
-
 def get_hparams(init=True):
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--config', type=str, default="./configs/modified_finetune_speaker.json",
+    parser.add_argument('-c', '--config', type=str, default="./configs/base.json",
                         help='JSON file for configuration')
-    parser.add_argument('-m', '--model', type=str, default="pretrained_models",
+    parser.add_argument('-m', '--model', type=str, required=True,
                         help='Model name')
-    parser.add_argument('-n', '--max_epochs', type=int, default=50,
-                        help='finetune epochs')
-    parser.add_argument('--cont', type=str2bool, default=False, help='whether to continue training on the latest checkpoint')
-    parser.add_argument('--drop_speaker_embed', type=str2bool, default=False, help='whether to drop existing characters')
-    parser.add_argument('--train_with_pretrained_model', type=str2bool, default=True,
-                        help='whether to train with pretrained model')
-    parser.add_argument('--preserved', type=int, default=4,
-                        help='Number of preserved models')
 
     args = parser.parse_args()
-    model_dir = os.path.join("./", args.model)
+    model_dir = os.path.join("./logs", args.model)
 
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
@@ -339,13 +179,30 @@ def get_hparams(init=True):
 
     hparams = HParams(**config)
     hparams.model_dir = model_dir
-    hparams.max_epochs = args.max_epochs
-    hparams.cont = args.cont
-    hparams.drop_speaker_embed = args.drop_speaker_embed
-    hparams.train_with_pretrained_model = args.train_with_pretrained_model
-    hparams.preserved = args.preserved
     return hparams
 
+
+def clean_checkpoints(path_to_models='logs/44k/', n_ckpts_to_keep=2, sort_by_time=True):
+    """Freeing up space by deleting saved ckpts
+
+  Arguments:
+  path_to_models    --  Path to the model directory
+  n_ckpts_to_keep   --  Number of ckpts to keep, excluding G_0.pth and D_0.pth
+  sort_by_time      --  True -> chronologically delete ckpts
+                        False -> lexicographically delete ckpts
+  """
+    import re
+    ckpts_files = [f for f in os.listdir(path_to_models) if os.path.isfile(os.path.join(path_to_models, f))]
+    name_key = (lambda _f: int(re.compile('._(\d+)\.pth').match(_f).group(1)))
+    time_key = (lambda _f: os.path.getmtime(os.path.join(path_to_models, _f)))
+    sort_key = time_key if sort_by_time else name_key
+    x_sorted = lambda _x: sorted([f for f in ckpts_files if f.startswith(_x) and not f.endswith('_0.pth')],
+                                 key=sort_key)
+    to_del = [os.path.join(path_to_models, fn) for fn in
+              (x_sorted('G')[:-n_ckpts_to_keep] + x_sorted('D')[:-n_ckpts_to_keep])]
+    del_info = lambda fn: logger.info(f".. Free up space by deleting ckpt {fn}")
+    del_routine = lambda x: [os.remove(x), del_info(x)]
+    rs = [del_routine(fn) for fn in to_del]
 
 def get_hparams_from_dir(model_dir):
     config_save_path = os.path.join(model_dir, "config.json")
@@ -359,7 +216,7 @@ def get_hparams_from_dir(model_dir):
 
 
 def get_hparams_from_file(config_path):
-    with open(config_path, "r", encoding="utf-8") as f:
+    with open(config_path, "r") as f:
         data = f.read()
     config = json.loads(data)
 

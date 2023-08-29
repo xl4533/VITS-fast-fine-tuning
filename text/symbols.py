@@ -1,76 +1,51 @@
-'''
-Defines the set of symbols used in text input to the model.
-'''
+punctuation = ['!', '?', '…', ",", ".", "'", '-']
+pu_symbols = punctuation + ["SP", "UNK"]
+pad = '_'
 
-# japanese_cleaners
-# _pad        = '_'
-# _punctuation = ',.!?-'
-# _letters = 'AEINOQUabdefghijkmnoprstuvwyzʃʧ↓↑ '
+# chinese
+zh_symbols = ['E', 'En', 'a', 'ai', 'an', 'ang', 'ao', 'b', 'c', 'ch', 'd', 'e', 'ei', 'en', 'eng', 'er', 'f', 'g', 'h',
+       'i', 'i0', 'ia', 'ian', 'iang', 'iao', 'ie', 'in', 'ing', 'iong', 'ir', 'iu', 'j', 'k', 'l', 'm', 'n', 'o',
+       'ong',
+       'ou', 'p', 'q', 'r', 's', 'sh', 't', 'u', 'ua', 'uai', 'uan', 'uang', 'ui', 'un', 'uo', 'v', 'van', 've', 'vn',
+       'w', 'x', 'y', 'z', 'zh',
+        "AA", "EE", "OO"]
+num_zh_tones = 6
 
+# japanese
+ja_symbols = ['I', 'N', 'U', 'a', 'b', 'by', 'ch', 'cl', 'd', 'dy', 'e', 'f', 'g', 'gy', 'h', 'hy', 'i', 'j', 'k', 'ky',
+              'm', 'my', 'n', 'ny', 'o', 'p', 'py', 'r', 'ry', 's', 'sh', 't', 'ts', 'u', 'V', 'w', 'y', 'z']
+num_ja_tones = 1
 
-'''# japanese_cleaners2
-_pad        = '_'
-_punctuation = ',.!?-~…'
-_letters = 'AEINOQUabdefghijkmnoprstuvwyzʃʧʦ↓↑ '
-'''
+# English
+en_symbols = ['aa', 'ae', 'ah', 'ao', 'aw', 'ay', 'b', 'ch', 'd', 'dh', 'eh', 'er', 'ey', 'f', 'g', 'hh', 'ih', 'iy',
+              'jh', 'k', 'l', 'm', 'n', 'ng', 'ow', 'oy', 'p', 'r', 's',
+              'sh', 't', 'th', 'uh', 'uw', 'V', 'w', 'y', 'z', 'zh']
+num_en_tones = 4
 
+# combine all symbols
+normal_symbols = sorted(set(zh_symbols + ja_symbols + en_symbols))
+symbols = [pad] + normal_symbols + pu_symbols
+sil_phonemes_ids = [symbols.index(i) for i in pu_symbols]
 
-'''# korean_cleaners
-_pad        = '_'
-_punctuation = ',.!?…~'
-_letters = 'ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎㄲㄸㅃㅆㅉㅏㅓㅗㅜㅡㅣㅐㅔ '
-'''
+# combine all tones
+num_tones = num_zh_tones + num_ja_tones + num_en_tones
 
-'''# chinese_cleaners
-_pad        = '_'
-_punctuation = '，。！？—…'
-_letters = 'ㄅㄆㄇㄈㄉㄊㄋㄌㄍㄎㄏㄐㄑㄒㄓㄔㄕㄖㄗㄘㄙㄚㄛㄜㄝㄞㄟㄠㄡㄢㄣㄤㄥㄦㄧㄨㄩˉˊˇˋ˙ '
-'''
+# language maps
+language_id_map = {
+    'ZH': 0,
+    "JA": 1,
+    "EN": 2
+}
+num_languages = len(language_id_map.keys())
 
-# # zh_ja_mixture_cleaners
-# _pad        = '_'
-# _punctuation = ',.!?-~…'
-# _letters = 'AEINOQUabdefghijklmnoprstuvwyzʃʧʦɯɹəɥ⁼ʰ`→↓↑ '
+language_tone_start_map = {
+    'ZH': 0,
+    "JA": num_zh_tones,
+    "EN": num_zh_tones + num_ja_tones
+}
 
+if __name__ == '__main__':
+    a = set(zh_symbols)
+    b = set(en_symbols)
+    print(sorted(a&b))
 
-'''# sanskrit_cleaners
-_pad        = '_'
-_punctuation = '।'
-_letters = 'ँंःअआइईउऊऋएऐओऔकखगघङचछजझञटठडढणतथदधनपफबभमयरलळवशषसहऽािीुूृॄेैोौ्ॠॢ '
-'''
-
-'''# cjks_cleaners
-_pad        = '_'
-_punctuation = ',.!?-~…'
-_letters = 'NQabdefghijklmnopstuvwxyzʃʧʥʦɯɹəɥçɸɾβŋɦː⁼ʰ`^#*=→↓↑ '
-'''
-
-'''# thai_cleaners
-_pad        = '_'
-_punctuation = '.!? '
-_letters = 'กขฃคฆงจฉชซฌญฎฏฐฑฒณดตถทธนบปผฝพฟภมยรฤลวศษสหฬอฮฯะัาำิีึืุูเแโใไๅๆ็่้๊๋์'
-'''
-
-# # cjke_cleaners2
-_pad        = '_'
-_punctuation = ',.!?-~…'
-_letters = 'NQabdefghijklmnopstuvwxyzɑæʃʑçɯɪɔɛɹðəɫɥɸʊɾʒθβŋɦ⁼ʰ`^#*=ˈˌ→↓↑ '
-
-
-'''# shanghainese_cleaners
-_pad        = '_'
-_punctuation = ',.!?…'
-_letters = 'abdfghiklmnopstuvyzøŋȵɑɔɕəɤɦɪɿʑʔʰ̩̃ᴀᴇ15678 '
-'''
-
-'''# chinese_dialect_cleaners
-_pad        = '_'
-_punctuation = ',.!?~…─'
-_letters = '#Nabdefghijklmnoprstuvwxyzæçøŋœȵɐɑɒɓɔɕɗɘəɚɛɜɣɤɦɪɭɯɵɷɸɻɾɿʂʅʊʋʌʏʑʔʦʮʰʷˀː˥˦˧˨˩̥̩̃̚ᴀᴇ↑↓∅ⱼ '
-'''
-
-# Export all symbols:
-symbols = [_pad] + list(_punctuation) + list(_letters)
-
-# Special symbol ids
-SPACE_ID = symbols.index(" ")

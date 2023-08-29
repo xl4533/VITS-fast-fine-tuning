@@ -20,7 +20,7 @@ def convert_pad_shape(pad_shape):
   pad_shape = [item for sublist in l for item in sublist]
   return pad_shape
 
-#lst是一个数字的列表，将item列表元素中间，头尾也要
+
 def intersperse(lst, item):
   result = [item] * (len(lst) * 2 + 1)
   result[1::2] = lst
@@ -50,10 +50,7 @@ def slice_segments(x, ids_str, segment_size=4):
   for i in range(x.size(0)):
     idx_str = ids_str[i]
     idx_end = idx_str + segment_size
-    try:
-      ret[i] = x[i, :, idx_str:idx_end]
-    except RuntimeError:
-      print("?")
+    ret[i] = x[i, :, idx_str:idx_end]
   return ret
 
 
@@ -121,11 +118,11 @@ def shift_1d(x):
   return x
 
 
-def sequence_mask(length, max_length=None):#length形状为[b]
+def sequence_mask(length, max_length=None):
   if max_length is None:
     max_length = length.max()
-  x = torch.arange(max_length, dtype=length.dtype, device=length.device)#x形状为[t]
-  return x.unsqueeze(0) < length.unsqueeze(1)#x形状为[1,b],length形状为[t,1],返回[b,t]形状的布尔矩阵
+  x = torch.arange(max_length, dtype=length.dtype, device=length.device)
+  return x.unsqueeze(0) < length.unsqueeze(1)
 
 
 def generate_path(duration, mask):

@@ -1,7 +1,10 @@
+# modified from https://github.com/CjangCjengh/vits/blob/main/text/japanese.py
 import re
-from unidecode import unidecode
+import sys
+
 import pyopenjtalk
 
+from text import symbols
 
 # Regular expression matching Japanese without punctuation marks:
 _japanese_characters = re.compile(
@@ -16,37 +19,6 @@ _symbols_to_japanese = [(re.compile('%s' % x[0]), x[1]) for x in [
     ('％', 'パーセント')
 ]]
 
-# List of (romaji, ipa) pairs for marks:
-_romaji_to_ipa = [(re.compile('%s' % x[0]), x[1]) for x in [
-    ('ts', 'ʦ'),
-    ('u', 'ɯ'),
-    ('j', 'ʥ'),
-    ('y', 'j'),
-    ('ni', 'n^i'),
-    ('nj', 'n^'),
-    ('hi', 'çi'),
-    ('hj', 'ç'),
-    ('f', 'ɸ'),
-    ('I', 'i*'),
-    ('U', 'ɯ*'),
-    ('r', 'ɾ')
-]]
-
-# List of (romaji, ipa2) pairs for marks:
-_romaji_to_ipa2 = [(re.compile('%s' % x[0]), x[1]) for x in [
-    ('u', 'ɯ'),
-    ('ʧ', 'tʃ'),
-    ('j', 'dʑ'),
-    ('y', 'j'),
-    ('ni', 'n^i'),
-    ('nj', 'n^'),
-    ('hi', 'çi'),
-    ('hj', 'ç'),
-    ('f', 'ɸ'),
-    ('I', 'i*'),
-    ('U', 'ɯ*'),
-    ('r', 'ɾ')
-]]
 
 # List of (consonant, sokuon) pairs:
 _real_sokuon = [(re.compile('%s' % x[0]), x[1]) for x in [
@@ -65,89 +37,68 @@ _real_hatsuon = [(re.compile('%s' % x[0]), x[1]) for x in [
 ]]
 
 
+
+def post_replace_ph(ph):
+    rep_map = {
+        '：': ',',
+        '；': ',',
+        '，': ',',
+        '。': '.',
+        '！': '!',
+        '？': '?',
+        '\n': '.',
+        "·": ",",
+        '、': ",",
+        '...': '…',
+        'v': "V"
+    }
+    if ph in rep_map.keys():
+        ph = rep_map[ph]
+    if ph in symbols:
+        return ph
+    if ph not in symbols:
+        ph = 'UNK'
+    return ph
+
 def symbols_to_japanese(text):
     for regex, replacement in _symbols_to_japanese:
         text = re.sub(regex, replacement, text)
     return text
 
 
-def japanese_to_romaji_with_accent(text):
+def preprocess_jap(text):
     '''Reference https://r9y9.github.io/ttslearn/latest/notebooks/ch10_Recipe-Tacotron.html'''
     text = symbols_to_japanese(text)
     sentences = re.split(_japanese_marks, text)
     marks = re.findall(_japanese_marks, text)
-    text = ''
+    text = []
     for i, sentence in enumerate(sentences):
         if re.match(_japanese_characters, sentence):
-            if text != '':
-                text += ' '
-            labels = pyopenjtalk.extract_fullcontext(sentence)
-            for n, label in enumerate(labels):
-                phoneme = re.search(r'\-([^\+]*)\+', label).group(1)
-                if phoneme not in ['sil', 'pau']:
-                    text += phoneme.replace('ch', 'ʧ').replace('sh',
-                                                               'ʃ').replace('cl', 'Q')
-                else:
-                    continue
-                # n_moras = int(re.search(r'/F:(\d+)_', label).group(1))
-                a1 = int(re.search(r"/A:(\-?[0-9]+)\+", label).group(1))
-                a2 = int(re.search(r"\+(\d+)\+", label).group(1))
-                a3 = int(re.search(r"\+(\d+)/", label).group(1))
-                if re.search(r'\-([^\+]*)\+', labels[n + 1]).group(1) in ['sil', 'pau']:
-                    a2_next = -1
-                else:
-                    a2_next = int(
-                        re.search(r"\+(\d+)\+", labels[n + 1]).group(1))
-                # Accent phrase boundary
-                if a3 == 1 and a2_next == 1:
-                    text += ' '
-                # Falling
-                elif a1 == 0 and a2_next == a2 + 1:
-                    text += '↓'
-                # Rising
-                elif a2 == 1 and a2_next == 2:
-                    text += '↑'
+            p = pyopenjtalk.g2p(sentence)
+            text += p.split(" ")
+
         if i < len(marks):
-            text += unidecode(marks[i]).replace(' ', '')
+            text += [marks[i].replace(' ', '')]
     return text
 
-
-def get_real_sokuon(text):
-    for regex, replacement in _real_sokuon:
-        text = re.sub(regex, replacement, text)
+def text_normalize(text):
+    # todo: jap text normalize
     return text
 
-
-def get_real_hatsuon(text):
-    for regex, replacement in _real_hatsuon:
-        text = re.sub(regex, replacement, text)
-    return text
-
-
-def japanese_to_ipa(text):
-    text = japanese_to_romaji_with_accent(text).replace('...', '…')
-    text = re.sub(
-        r'([aiueo])\1+', lambda x: x.group(0)[0]+'ː'*(len(x.group(0))-1), text)
-    text = get_real_sokuon(text)
-    text = get_real_hatsuon(text)
-    for regex, replacement in _romaji_to_ipa:
-        text = re.sub(regex, replacement, text)
-    return text
+def g2p(norm_text):
+    phones = preprocess_jap(norm_text)
+    phones = [post_replace_ph(i) for i in phones]
+    # todo: implement tones and word2ph
+    tones = [0 for i in phones]
+    word2ph = [1 for i in phones]
+    return phones, tones, word2ph
 
 
-def japanese_to_ipa2(text):
-    text = japanese_to_romaji_with_accent(text).replace('...', '…')
-    text = get_real_sokuon(text)
-    text = get_real_hatsuon(text)
-    for regex, replacement in _romaji_to_ipa2:
-        text = re.sub(regex, replacement, text)
-    return text
-
-
-def japanese_to_ipa3(text):
-    text = japanese_to_ipa2(text).replace('n^', 'ȵ').replace(
-        'ʃ', 'ɕ').replace('*', '\u0325').replace('#', '\u031a')
-    text = re.sub(
-        r'([aiɯeo])\1+', lambda x: x.group(0)[0]+'ː'*(len(x.group(0))-1), text)
-    text = re.sub(r'((?:^|\s)(?:ts|tɕ|[kpt]))', r'\1ʰ', text)
-    return text
+if __name__ == '__main__':
+    for line in open("../../../Downloads/transcript_utf8.txt").readlines():
+        text = line.split(":")[1]
+        phones, tones, word2ph = g2p(text)
+        for p in phones:
+            if p == "z":
+                print(text, phones)
+                sys.exit(0)
