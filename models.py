@@ -13,8 +13,9 @@ from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 from commons import init_weights, get_padding
 
+AVAILABLE_FLOW_TYPES = ["pre_conv", "fft", "mono_layer_inter_residual", "mono_layer_post_residual"]
 
-class StochasticDurationPredictor(nn.Module):#随机时长预测器
+class StochasticDurationPredictor(nn.Module):
   def __init__(self, in_channels, filter_channels, kernel_size, p_dropout, n_flows=4, gin_channels=0):
     super().__init__()
     filter_channels = in_channels # it needs to be removed from future version.
@@ -60,7 +61,7 @@ class StochasticDurationPredictor(nn.Module):#随机时长预测器
       flows = self.flows
       assert w is not None
 
-      logdet_tot_q = 0
+      logdet_tot_q = 0 
       h_w = self.post_pre(w)
       h_w = self.post_convs(h_w, x_mask)
       h_w = self.post_proj(h_w) * x_mask
@@ -69,7 +70,7 @@ class StochasticDurationPredictor(nn.Module):#随机时长预测器
       for flow in self.post_flows:
         z_q, logdet_q = flow(z_q, x_mask, g=(x + h_w))
         logdet_tot_q += logdet_q
-      z_u, z1 = torch.split(z_q, [1, 1], 1)
+      z_u, z1 = torch.split(z_q, [1, 1], 1) 
       u = torch.sigmoid(z_u) * x_mask
       z0 = (w - u) * x_mask
       logdet_tot_q += torch.sum((F.logsigmoid(z_u) + F.logsigmoid(-z_u)) * x_mask, [1,2])
@@ -83,7 +84,7 @@ class StochasticDurationPredictor(nn.Module):#随机时长预测器
         z, logdet = flow(z, x_mask, g=x, reverse=reverse)
         logdet_tot = logdet_tot + logdet
       nll = torch.sum(0.5 * (math.log(2*math.pi) + (z**2)) * x_mask, [1,2]) - logdet_tot
-      return nll + logq # [b,]
+      return nll + logq # [b]
     else:
       flows = list(reversed(self.flows))
       flows = flows[:-2] + [flows[-1]] # remove a useless vflow
@@ -93,7 +94,6 @@ class StochasticDurationPredictor(nn.Module):#随机时长预测器
       z0, z1 = torch.split(z, [1, 1], 1)
       logw = z0
       return logw
-
 
 class DurationPredictor(nn.Module):
   def __init__(self, in_channels, filter_channels, kernel_size, p_dropout, gin_channels=0):
@@ -131,8 +131,76 @@ class DurationPredictor(nn.Module):
     x = self.proj(x * x_mask)
     return x * x_mask
 
+class DurationDiscriminator(nn.Module): #vits2
+  # TODO : not using "spk conditioning" for now according to the paper.
+  # Can be a better discriminator if we use it.
+  def __init__(self, in_channels, filter_channels, kernel_size, p_dropout, gin_channels=0):
+    super().__init__()
 
-class TextEncoder(nn.Module):#文本编码器
+    self.in_channels = in_channels
+    self.filter_channels = filter_channels
+    self.kernel_size = kernel_size
+    self.p_dropout = p_dropout
+    self.gin_channels = gin_channels
+
+    self.drop = nn.Dropout(p_dropout)
+    self.conv_1 = nn.Conv1d(in_channels, filter_channels, kernel_size, padding=kernel_size//2)
+    # self.norm_1 = modules.LayerNorm(filter_channels)
+    self.conv_2 = nn.Conv1d(filter_channels, filter_channels, kernel_size, padding=kernel_size//2)
+    # self.norm_2 = modules.LayerNorm(filter_channels)
+    self.dur_proj = nn.Conv1d(1, filter_channels, 1)
+
+    self.pre_out_conv_1 = nn.Conv1d(2*filter_channels, filter_channels, kernel_size, padding=kernel_size//2)
+    self.pre_out_norm_1 = modules.LayerNorm(filter_channels)
+    self.pre_out_conv_2 = nn.Conv1d(filter_channels, filter_channels, kernel_size, padding=kernel_size//2)
+    self.pre_out_norm_2 = modules.LayerNorm(filter_channels)
+
+    # if gin_channels != 0:
+    #   self.cond = nn.Conv1d(gin_channels, in_channels, 1)
+
+    self.output_layer = nn.Sequential(
+        nn.Linear(filter_channels, 1), 
+        nn.Sigmoid() 
+    )
+
+  def forward_probability(self, x, x_mask, dur, g=None):
+    dur = self.dur_proj(dur)
+    x = torch.cat([x, dur], dim=1)
+    x = self.pre_out_conv_1(x * x_mask)
+    # x = torch.relu(x)
+    # x = self.pre_out_norm_1(x)
+    # x = self.drop(x)
+    x = self.pre_out_conv_2(x * x_mask)
+    # x = torch.relu(x)
+    # x = self.pre_out_norm_2(x)
+    # x = self.drop(x)
+    x = x * x_mask
+    x = x.transpose(1, 2)
+    output_prob = self.output_layer(x)
+    return output_prob
+
+  def forward(self, x, x_mask, dur_r, dur_hat, g=None):
+    x = torch.detach(x)
+    # if g is not None:
+    #   g = torch.detach(g)
+    #   x = x + self.cond(g)
+    x = self.conv_1(x * x_mask)
+    # x = torch.relu(x)
+    # x = self.norm_1(x)
+    # x = self.drop(x)
+    x = self.conv_2(x * x_mask)
+    # x = torch.relu(x)
+    # x = self.norm_2(x)
+    # x = self.drop(x)
+    
+    output_probs = []
+    for dur in [dur_r, dur_hat]:
+      output_prob = self.forward_probability(x, x_mask, dur, g)
+      output_probs.append(output_prob)
+    
+    return output_probs
+  
+class TextEncoder(nn.Module):
   def __init__(self,
       n_vocab,
       out_channels,
@@ -141,19 +209,20 @@ class TextEncoder(nn.Module):#文本编码器
       n_heads,
       n_layers,
       kernel_size,
-      p_dropout):
+      p_dropout,
+      gin_channels=0):
     super().__init__()
-    self.n_vocab = n_vocab #音标数量
-    self.out_channels = out_channels #输出通道数
-    self.hidden_channels = hidden_channels #隐变量通道数
-    self.filter_channels = filter_channels #过滤器通道数
-    self.n_heads = n_heads #多头注意力，即多个self attention
-    self.n_layers = n_layers #堆叠层数
-    self.kernel_size = kernel_size #卷积kernel大小
-    self.p_dropout = p_dropout #dropout
-
-    self.emb = nn.Embedding(n_vocab, hidden_channels)#embedding模块，用于将文本转化为向量，索引范围为0~n_vocab-1，每个嵌入向量维度为h
-    nn.init.normal_(self.emb.weight, 0.0, hidden_channels**-0.5)#初始化embedding超参数
+    self.n_vocab = n_vocab
+    self.out_channels = out_channels
+    self.hidden_channels = hidden_channels
+    self.filter_channels = filter_channels
+    self.n_heads = n_heads
+    self.n_layers = n_layers
+    self.kernel_size = kernel_size
+    self.p_dropout = p_dropout
+    self.gin_channels = gin_channels
+    self.emb = nn.Embedding(n_vocab, hidden_channels)
+    nn.init.normal_(self.emb.weight, 0.0, hidden_channels**-0.5)
 
     self.encoder = attentions.Encoder(
       hidden_channels,
@@ -161,21 +230,362 @@ class TextEncoder(nn.Module):#文本编码器
       n_heads,
       n_layers,
       kernel_size,
-      p_dropout)#定义多头注意力编码器
-    self.proj= nn.Conv1d(hidden_channels, out_channels * 2, 1)#定义一个1维卷积，用于通道升维，预测f(z)[符合高斯分布]的均值和对数标准差
+      p_dropout,
+      gin_channels=self.gin_channels)
+    self.proj= nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
-  def forward(self, x, x_lengths):#x为输入文本，形状为[b,t]，x_lenghts为文本真实长度，形状为[b]
+  def forward(self, x, x_lengths, g=None):
     x = self.emb(x) * math.sqrt(self.hidden_channels) # [b, t, h]
     x = torch.transpose(x, 1, -1) # [b, h, t]
-    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)#x_mask形状为[b,1,t]
+    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)
 
-    x = self.encoder(x * x_mask, x_mask)#对掩码后的文本向量进行编码
-    stats = self.proj(x) * x_mask#对编码出来的向量在通道维度进行扩充为2倍，并应用x_mask生成掩码后的向量。
+    x = self.encoder(x * x_mask, x_mask, g=g)
+    stats = self.proj(x) * x_mask
 
-    m, logs = torch.split(stats, self.out_channels, dim=1)#对扩充后的向量在通道维度进行切分，一半用来预测f(z)[符合高斯分布]的均值，一半用来预测对数标准差
-    return x, m, logs, x_mask#此处的x表示编码后的文本向量，仅是中间输出，后续用于随机时长预测器的输入。m表示f(z)的均值，logs表示f(z)的对数标准差，x_mask为文本真实长度掩码矩阵
+    m, logs = torch.split(stats, self.out_channels, dim=1)
+    return x, m, logs, x_mask
 
+class ResidualCouplingTransformersLayer(nn.Module): #vits2
+  def __init__(
+      self,
+      channels,
+      hidden_channels,
+      kernel_size,
+      dilation_rate,
+      n_layers,
+      p_dropout=0,
+      gin_channels=0,
+      mean_only=False,
+  ):
+      assert channels % 2 == 0, "channels should be divisible by 2"
+      super().__init__()
+      self.channels = channels
+      self.hidden_channels = hidden_channels
+      self.kernel_size = kernel_size
+      self.dilation_rate = dilation_rate
+      self.n_layers = n_layers
+      self.half_channels = channels // 2
+      self.mean_only = mean_only
+      #vits2
+      self.pre_transformer = attentions.Encoder(
+          self.half_channels,
+          self.half_channels,
+          n_heads=2,
+          n_layers=2,
+          kernel_size=3,
+          p_dropout=0.1,
+          window_size=None
+          )
+      
+      self.pre = nn.Conv1d(self.half_channels, hidden_channels, 1)
+      self.enc = modules.WN(
+          hidden_channels,
+          kernel_size,
+          dilation_rate,
+          n_layers,
+          p_dropout=p_dropout,
+          gin_channels=gin_channels,
+      )
+      #vits2
+      self.post_transformer = attentions.Encoder( 
+          self.hidden_channels,
+          self.hidden_channels,
+          n_heads=2,
+          n_layers=2,
+          kernel_size=3,
+          p_dropout=0.1,
+          window_size=None
+          )
+      
+      self.post = nn.Conv1d(hidden_channels, self.half_channels * (2 - mean_only), 1)
+      self.post.weight.data.zero_()
+      self.post.bias.data.zero_()
 
+  def forward(self, x, x_mask, g=None, reverse=False):
+      x0, x1 = torch.split(x, [self.half_channels] * 2, 1)
+      x0_ = self.pre_transformer(x0 * x_mask, x_mask) #vits2
+      x0_ = x0_ + x0 #vits2 residual connection
+      h = self.pre(x0_) * x_mask #changed from x0 to x0_ to retain x0 for the flow
+      h = self.enc(h, x_mask, g=g)
+
+      #vits2 - (experimental;uncomment the following 2 line to use)
+      # h_ = self.post_transformer(h, x_mask) 
+      # h = h + h_ #vits2 residual connection 
+
+      stats = self.post(h) * x_mask
+      if not self.mean_only:
+          m, logs = torch.split(stats, [self.half_channels] * 2, 1)
+      else:
+          m = stats
+          logs = torch.zeros_like(m)
+      if not reverse:
+          x1 = m + x1 * torch.exp(logs) * x_mask
+          x = torch.cat([x0, x1], 1)
+          logdet = torch.sum(logs, [1, 2])
+          return x, logdet
+      else:
+          x1 = (x1 - m) * torch.exp(-logs) * x_mask
+          x = torch.cat([x0, x1], 1)
+          return x
+
+class FFTransformerCouplingLayer(nn.Module): #vits2
+  def __init__(self,
+      channels,
+      hidden_channels,
+      kernel_size,
+      n_layers,
+      n_heads,
+      p_dropout=0,
+      filter_channels=768,
+      mean_only=False,
+      gin_channels = 0
+      ):
+    assert channels % 2 == 0, "channels should be divisible by 2"
+    super().__init__()
+    self.channels = channels
+    self.hidden_channels = hidden_channels
+    self.kernel_size = kernel_size
+    self.n_layers = n_layers
+    self.half_channels = channels // 2
+    self.mean_only = mean_only
+
+    self.pre = nn.Conv1d(self.half_channels, hidden_channels, 1)
+    self.enc = attentions.FFT(
+       hidden_channels, 
+       filter_channels, 
+       n_heads, 
+       n_layers, 
+       kernel_size, 
+       p_dropout, 
+       isflow = True, 
+       gin_channels = gin_channels
+       )
+    self.post = nn.Conv1d(hidden_channels, self.half_channels * (2 - mean_only), 1)
+    self.post.weight.data.zero_()
+    self.post.bias.data.zero_()
+
+  def forward(self, x, x_mask, g=None, reverse=False):
+    x0, x1 = torch.split(x, [self.half_channels]*2, 1)
+    h = self.pre(x0) * x_mask
+    h_ = self.enc(h, x_mask, g=g)
+    h = h_ + h
+    stats = self.post(h) * x_mask
+    if not self.mean_only:
+      m, logs = torch.split(stats, [self.half_channels]*2, 1)
+    else:
+      m = stats
+      logs = torch.zeros_like(m)
+
+    if not reverse:
+      x1 = m + x1 * torch.exp(logs) * x_mask
+      x = torch.cat([x0, x1], 1)
+      logdet = torch.sum(logs, [1,2])
+      return x, logdet
+    else:
+      x1 = (x1 - m) * torch.exp(-logs) * x_mask
+      x = torch.cat([x0, x1], 1)
+      return x
+
+class MonoTransformerFlowLayer(nn.Module): #vits2
+  def __init__(
+      self,
+      channels,
+      hidden_channels,
+      mean_only=False,
+      residual_connection=False,
+      #according to VITS-2 paper fig 1B set residual_connection=True
+  ):
+    assert channels % 2 == 0, "channels should be divisible by 2"
+    super().__init__()
+    self.channels = channels
+    self.hidden_channels = hidden_channels
+    self.half_channels = channels // 2
+    self.mean_only = mean_only
+    self.residual_connection = residual_connection
+    #vits2
+    self.pre_transformer = attentions.Encoder(
+        self.half_channels,
+        self.half_channels,
+        n_heads=2,
+        n_layers=2,
+        kernel_size=3,
+        p_dropout=0.1,
+        window_size=None
+        )
+    
+    self.post = nn.Conv1d(self.half_channels, self.half_channels * (2 - mean_only), 1)
+    self.post.weight.data.zero_()
+    self.post.bias.data.zero_()
+
+  def forward(self, x, x_mask, g=None, reverse=False):
+    if self.residual_connection:
+      if not reverse:
+        x0, x1 = torch.split(x, [self.half_channels] * 2, 1)
+        x0_ = x0 * x_mask
+        x0_ = self.pre_transformer(x0, x_mask) #vits2
+        stats = self.post(x0_) * x_mask
+        if not self.mean_only:
+          m, logs = torch.split(stats, [self.half_channels] * 2, 1)
+        else:
+          m = stats
+          logs = torch.zeros_like(m)
+        x1 = m + x1 * torch.exp(logs) * x_mask
+        x_ = torch.cat([x0, x1], 1)
+        x = x + x_
+        logdet = torch.sum(torch.log(torch.exp(logs) + 1), [1, 2])
+        logdet = logdet + torch.log(torch.tensor(2)) * (x0.shape[1]* x0.shape[2])
+        return x, logdet
+      else:
+        x0, x1 = torch.split(x, [self.half_channels] * 2, 1)
+        x0 = x0/2 
+        x0_ = x0 * x_mask
+        x0_ = self.pre_transformer(x0, x_mask) #vits2
+        stats = self.post(x0_) * x_mask
+        if not self.mean_only:
+          m, logs = torch.split(stats, [self.half_channels] * 2, 1)
+        else:
+          m = stats
+          logs = torch.zeros_like(m)
+        x1_ = ((x1 - m) / (1 + torch.exp(-logs))) * x_mask
+        x = torch.cat([x0, x1_], 1)
+        return x
+    else:
+      x0, x1 = torch.split(x, [self.half_channels] * 2, 1)
+      x0_ = self.pre_transformer(x0 * x_mask, x_mask) #vits2
+      h = x0_ + x0 #vits2
+      stats = self.post(h) * x_mask
+      if not self.mean_only:
+          m, logs = torch.split(stats, [self.half_channels] * 2, 1)
+      else:
+          m = stats
+          logs = torch.zeros_like(m)
+      if not reverse:
+          x1 = m + x1 * torch.exp(logs) * x_mask
+          x_ = torch.cat([x0, x1], 1)
+          logdet = torch.sum(logs, [1, 2])
+          return x, logdet
+      else:
+          x1 = (x1 - m) * torch.exp(-logs) * x_mask
+          x = torch.cat([x0, x1], 1)
+          return x
+        
+class ResidualCouplingTransformersBlock(nn.Module): #vits2
+  def __init__(self,
+      channels,
+      hidden_channels,
+      kernel_size,
+      dilation_rate,
+      n_layers,
+      n_flows=4,
+      gin_channels=0,
+      use_transformer_flows=False,
+      transformer_flow_type="pre_conv",
+      ):
+    super().__init__()
+    self.channels = channels
+    self.hidden_channels = hidden_channels
+    self.kernel_size = kernel_size
+    self.dilation_rate = dilation_rate
+    self.n_layers = n_layers
+    self.n_flows = n_flows
+    self.gin_channels = gin_channels
+
+    self.flows = nn.ModuleList()
+    if use_transformer_flows:
+      if transformer_flow_type == "pre_conv":
+        for i in range(n_flows):
+          self.flows.append(
+             ResidualCouplingTransformersLayer(
+             channels, 
+             hidden_channels, 
+             kernel_size, 
+             dilation_rate, 
+             n_layers, 
+             gin_channels=gin_channels, 
+             mean_only=True
+             )
+            )
+          self.flows.append(modules.Flip())
+      elif transformer_flow_type == "fft":
+         for i in range(n_flows):
+          self.flows.append(
+             FFTransformerCouplingLayer(
+             channels, 
+             hidden_channels, 
+             kernel_size, 
+             dilation_rate, 
+             n_layers, 
+             gin_channels=gin_channels, 
+             mean_only=True
+             )
+            )
+          self.flows.append(modules.Flip())
+      elif transformer_flow_type == "mono_layer_inter_residual":
+        for i in range(n_flows):
+          self.flows.append(
+             modules.ResidualCouplingLayer(
+             channels, 
+             hidden_channels, 
+             kernel_size, 
+             dilation_rate, 
+             n_layers, 
+             gin_channels=gin_channels, 
+             mean_only=True
+             )
+            )
+          self.flows.append(modules.Flip())
+          self.flows.append(
+           MonoTransformerFlowLayer(
+           channels, hidden_channels, mean_only=True
+           )
+           )
+      elif transformer_flow_type == "mono_layer_post_residual":
+        for i in range(n_flows):
+          self.flows.append(
+             modules.ResidualCouplingLayer(
+             channels, 
+             hidden_channels, 
+             kernel_size, 
+             dilation_rate, 
+             n_layers, 
+             gin_channels=gin_channels, 
+             mean_only=True,
+
+             )
+            )
+          self.flows.append(modules.Flip())
+          self.flows.append(
+           MonoTransformerFlowLayer(
+           channels, 
+           hidden_channels, 
+           mean_only=True,
+           residual_connection=True
+           )
+          )
+    else:
+      for i in range(n_flows):
+        self.flows.append(
+           modules.ResidualCouplingLayer(
+           channels, 
+           hidden_channels,
+           kernel_size, 
+           dilation_rate, 
+           n_layers, 
+           gin_channels=gin_channels, 
+           mean_only=True
+           )
+          )
+        self.flows.append(modules.Flip())
+
+  def forward(self, x, x_mask, g=None, reverse=False):
+    if not reverse:
+      for flow in self.flows:
+        x, _ = flow(x, x_mask, g=g, reverse=reverse)
+    else:
+      for flow in reversed(self.flows):
+        x = flow(x, x_mask, g=g, reverse=reverse)
+    return x
+  
 class ResidualCouplingBlock(nn.Module):
   def __init__(self,
       channels,
@@ -196,7 +606,17 @@ class ResidualCouplingBlock(nn.Module):
 
     self.flows = nn.ModuleList()
     for i in range(n_flows):
-      self.flows.append(modules.ResidualCouplingLayer(channels, hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels=gin_channels, mean_only=True))
+      self.flows.append(
+         modules.ResidualCouplingLayer(
+         channels, 
+         hidden_channels, 
+         kernel_size, 
+         dilation_rate, 
+         n_layers, 
+         gin_channels=gin_channels, 
+         mean_only=True
+         )
+         )
       self.flows.append(modules.Flip())
 
   def forward(self, x, x_mask, g=None, reverse=False):
@@ -227,18 +647,18 @@ class PosteriorEncoder(nn.Module):
     self.n_layers = n_layers
     self.gin_channels = gin_channels
 
-    self.pre = nn.Conv1d(in_channels, hidden_channels, 1)#in_channels为spec_channels，hidden_channels为超参数
-    self.enc = modules.WN(hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels=gin_channels)#WaveNet网络结构，用于对线性谱进行隐变量编码
-    self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)#1维卷积，用于扩张隐变量z的通道数，用于预测z[符合正态分布]的均值和对数标准差
+    self.pre = nn.Conv1d(in_channels, hidden_channels, 1)
+    self.enc = modules.WN(hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels=gin_channels)
+    self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
-  def forward(self, x, x_lengths, g=None):#x是线性谱，形状为[b, spec_channels(默认值是513), 当前batch最大的数据长度x_maxlen],x_length是线性谱真实长度，形状为[b]
-    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)#真实线性谱长度的掩码，形状为[b,1,x_maxlen]
-    x = self.pre(x) * x_mask#[b, hidden_channels, x_maxlen] * [b, 1, x_maxlen]，按位相乘。将输入x掩盖掉无效数据
-    x = self.enc(x, x_mask, g=g)#多层卷积提取特征
-    stats = self.proj(x) * x_mask#[b, hidden_channels * 2, x_maxlen] * [b, 1, x_maxlen]
-    m, logs = torch.split(stats, self.out_channels, dim=1)#在输出通道维度将特征切分成两部分，m用来表达隐变量z所服从的高斯分布的均值，logs用来表示对数标准差
-    z = (m + torch.randn_like(m) * torch.exp(logs)) * x_mask #从预测出的高斯分布中，使用重参数化采样出来的隐变量z
-    return z, m, logs, x_mask#z表示隐变量，m表示隐变量z所服从的高斯分布的均值，logs表示对数标准差，x_mask表示真实线性谱长度的掩码
+  def forward(self, x, x_lengths, g=None):
+    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)
+    x = self.pre(x) * x_mask
+    x = self.enc(x, x_mask, g=g)
+    stats = self.proj(x) * x_mask
+    m, logs = torch.split(stats, self.out_channels, dim=1)
+    z = (m + torch.randn_like(m) * torch.exp(logs)) * x_mask
+    return z, m, logs, x_mask
 
 
 class Generator(torch.nn.Module):
@@ -296,7 +716,7 @@ class Generator(torch.nn.Module):
             l.remove_weight_norm()
 
 
-class DiscriminatorP(torch.nn.Module):#判别器P
+class DiscriminatorP(torch.nn.Module):
     def __init__(self, period, kernel_size=5, stride=3, use_spectral_norm=False):
         super(DiscriminatorP, self).__init__()
         self.period = period
@@ -333,7 +753,7 @@ class DiscriminatorP(torch.nn.Module):#判别器P
         return x, fmap
 
 
-class DiscriminatorS(torch.nn.Module):#判别器S
+class DiscriminatorS(torch.nn.Module):
     def __init__(self, use_spectral_norm=False):
         super(DiscriminatorS, self).__init__()
         norm_f = weight_norm if use_spectral_norm == False else spectral_norm
@@ -351,14 +771,14 @@ class DiscriminatorS(torch.nn.Module):#判别器S
         fmap = []
 
         for l in self.convs:
-            x = l(x)#卷积操作
-            x = F.leaky_relu(x, modules.LRELU_SLOPE)#经过leaky_relu激活函数
-            fmap.append(x)#保存中间输出的特征图
+            x = l(x)
+            x = F.leaky_relu(x, modules.LRELU_SLOPE)
+            fmap.append(x)
         x = self.conv_post(x)
         fmap.append(x)
         x = torch.flatten(x, 1, -1)
 
-        return x, fmap#返回判别结果及中间特征输出
+        return x, fmap
 
 
 class MultiPeriodDiscriminator(torch.nn.Module):
@@ -376,23 +796,23 @@ class MultiPeriodDiscriminator(torch.nn.Module):
         fmap_rs = []
         fmap_gs = []
         for i, d in enumerate(self.discriminators):
-            y_d_r, fmap_r = d(y)#使用第i个判别器对真实波形y进行判别
-            y_d_g, fmap_g = d(y_hat)#使用第i个判别器对生成波形y_hat进行判别
-            y_d_rs.append(y_d_r)#保存对真实波形的判断结果
-            y_d_gs.append(y_d_g)#保持对生成波形的判断结果
-            fmap_rs.append(fmap_r)#保存真实波形的中间特征
-            fmap_gs.append(fmap_g)#保存生成波形的中间特征
+            y_d_r, fmap_r = d(y)
+            y_d_g, fmap_g = d(y_hat)
+            y_d_rs.append(y_d_r)
+            y_d_gs.append(y_d_g)
+            fmap_rs.append(fmap_r)
+            fmap_gs.append(fmap_g)
 
         return y_d_rs, y_d_gs, fmap_rs, fmap_gs
 
 
 
-class SynthesizerTrn(nn.Module):#生成器
+class SynthesizerTrn(nn.Module):
   """
   Synthesizer for Training
   """
 
-  def __init__(self,
+  def __init__(self, 
     n_vocab,
     spec_channels,
     segment_size,
@@ -403,11 +823,11 @@ class SynthesizerTrn(nn.Module):#生成器
     n_layers,
     kernel_size,
     p_dropout,
-    resblock,
-    resblock_kernel_sizes,
-    resblock_dilation_sizes,
-    upsample_rates,
-    upsample_initial_channel,
+    resblock, 
+    resblock_kernel_sizes, 
+    resblock_dilation_sizes, 
+    upsample_rates, 
+    upsample_initial_channel, 
     upsample_kernel_sizes,
     n_speakers=0,
     gin_channels=0,
@@ -415,8 +835,8 @@ class SynthesizerTrn(nn.Module):#生成器
     **kwargs):
 
     super().__init__()
-    self.n_vocab = n_vocab #音标数量
-    self.spec_channels = spec_channels #频谱维度spec_channels(默认值是513)
+    self.n_vocab = n_vocab
+    self.spec_channels = spec_channels
     self.inter_channels = inter_channels
     self.hidden_channels = hidden_channels
     self.filter_channels = filter_channels
@@ -433,9 +853,22 @@ class SynthesizerTrn(nn.Module):#生成器
     self.segment_size = segment_size
     self.n_speakers = n_speakers
     self.gin_channels = gin_channels
+    self.use_spk_conditioned_encoder = kwargs.get("use_spk_conditioned_encoder", False)
+    self.use_transformer_flows = kwargs.get("use_transformer_flows", False)
+    self.transformer_flow_type = kwargs.get("transformer_flow_type", "mono_layer_post_residual")
+    if self.use_transformer_flows:
+      assert self.transformer_flow_type in AVAILABLE_FLOW_TYPES, f"transformer_flow_type must be one of {AVAILABLE_FLOW_TYPES}"
+    self.use_sdp = use_sdp
+    # self.use_duration_discriminator = kwargs.get("use_duration_discriminator", False)
+    self.use_noise_scaled_mas = kwargs.get("use_noise_scaled_mas", False)
+    self.mas_noise_scale_initial = kwargs.get("mas_noise_scale_initial", 0.01)
+    self.noise_scale_delta = kwargs.get("noise_scale_delta", 2e-6)
 
-    self.use_sdp = use_sdp#是否使用随机时长预测器
-
+    self.current_mas_noise_scale = self.mas_noise_scale_initial
+    if self.use_spk_conditioned_encoder and gin_channels > 0:
+       self.enc_gin_channels = gin_channels
+    else:
+        self.enc_gin_channels = 0
     self.enc_p = TextEncoder(n_vocab,
         inter_channels,
         hidden_channels,
@@ -443,31 +876,42 @@ class SynthesizerTrn(nn.Module):#生成器
         n_heads,
         n_layers,
         kernel_size,
-        p_dropout)#文本编码器
-    self.dec = Generator(inter_channels, resblock, resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates, upsample_initial_channel, upsample_kernel_sizes, gin_channels=gin_channels)#隐变量z的解码器
-    self.enc_q = PosteriorEncoder(spec_channels, inter_channels, hidden_channels, 5, 1, 16, gin_channels=gin_channels)#后验编码器，预测隐变量z分布的均值和对数标准差，并从分布中取值z
-    self.flow = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 4, gin_channels=gin_channels)#标准化流flow，用于将先验编码器生成的f(z)[符合正态分布]映射到一个更复杂的分布
+        p_dropout,
+        gin_channels=self.enc_gin_channels)
+    
+    self.dec = Generator(inter_channels, resblock, resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates, upsample_initial_channel, upsample_kernel_sizes, gin_channels=gin_channels)
+    self.enc_q = PosteriorEncoder(spec_channels, inter_channels, hidden_channels, 5, 1, 16, gin_channels=gin_channels)
+    # self.flow = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 4, gin_channels=gin_channels)
+    self.flow = ResidualCouplingTransformersBlock(
+       inter_channels, 
+       hidden_channels, 
+       5, 
+       1, 
+       4, 
+       gin_channels=gin_channels, 
+       use_transformer_flows=self.use_transformer_flows,
+       transformer_flow_type=self.transformer_flow_type
+       )
 
-    if use_sdp:#是否使用了随机时长预测器
-      self.dp = StochasticDurationPredictor(hidden_channels, 192, 3, 0.5, 4, gin_channels=gin_channels)#定义随机时长预测器
+    if use_sdp:
+      self.dp = StochasticDurationPredictor(hidden_channels, 192, 3, 0.5, 4, gin_channels=gin_channels)
     else:
-      self.dp = DurationPredictor(hidden_channels, 256, 3, 0.5, gin_channels=gin_channels)#定义时长预测器
+      self.dp = DurationPredictor(hidden_channels, 256, 3, 0.5, gin_channels=gin_channels)
 
-    if n_speakers >= 1:#判断是否为多说话人
-      self.emb_g = nn.Embedding(n_speakers, gin_channels)#定义说话人信息的编码器
+    if n_speakers > 1:
+      self.emb_g = nn.Embedding(n_speakers, gin_channels)
 
   def forward(self, x, x_lengths, y, y_lengths, sid=None):
-    #x的形状为[b,T,当前批次最大的文本长度]
-    x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)#输入的x是文本编码，x_lengths是文本的真实长度。输出的x是预测的隐变量f(z)[符合正态分布],m_p是均值，logs_p是对数标准差，x_mask是真实文本长度的掩码
     if self.n_speakers > 0:
       g = self.emb_g(sid).unsqueeze(-1) # [b, h, 1]
     else:
       g = None
+    
+    x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, g=g)
+    z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
+    z_p = self.flow(z, y_mask, g=g)
 
-    z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)#输入的y为语音数据的线性谱，y_length为真实的线性谱长度。输出的z为隐变量，m_q为均值，logs_q为对数标准差，y_mask是真实频谱长度
-    z_p = self.flow(z, y_mask, g=g)#z_p主要用于计算KL损失，此处的flow可以理解为逆flow
-
-    with torch.no_grad():#使用动态规划计算MAS
+    with torch.no_grad():
       # negative cross-entropy
       s_p_sq_r = torch.exp(-2 * logs_p) # [b, d, t]
       neg_cent1 = torch.sum(-0.5 * math.log(2 * math.pi) - logs_p, [1], keepdim=True) # [b, 1, t_s]
@@ -476,33 +920,38 @@ class SynthesizerTrn(nn.Module):#生成器
       neg_cent4 = torch.sum(-0.5 * (m_p ** 2) * s_p_sq_r, [1], keepdim=True) # [b, 1, t_s]
       neg_cent = neg_cent1 + neg_cent2 + neg_cent3 + neg_cent4
 
+      if self.use_noise_scaled_mas:
+        epsilon = torch.std(neg_cent) * torch.randn_like(neg_cent) * self.current_mas_noise_scale
+        neg_cent = neg_cent + epsilon
+
       attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
       attn = monotonic_align.maximum_path(neg_cent, attn_mask.squeeze(1)).unsqueeze(1).detach()
-
-    w = attn.sum(2)#用于后续随机时长预测器的计算
-    if self.use_sdp:#使用随机时长预测器
-      l_length = self.dp(x, x_mask, w, g=g)#随机时长预测其推导
+      
+    w = attn.sum(2)
+    if self.use_sdp:
+      l_length = self.dp(x, x_mask, w, g=g)
       l_length = l_length / torch.sum(x_mask)
+      logw = self.dp(x, x_mask, g=g, reverse=True, noise_scale=1.)
+      logw_ = torch.log(w + 1e-6) * x_mask
     else:
       logw_ = torch.log(w + 1e-6) * x_mask
       logw = self.dp(x, x_mask, g=g)
-      l_length = torch.sum((logw - logw_)**2, [1,2]) / torch.sum(x_mask) # for averaging
-
+      l_length = torch.sum((logw - logw_)**2, [1,2]) / torch.sum(x_mask) # for averaging 
+       
     # expand prior
-    m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)#对先验编码器的输出进行对齐，与后验编码器的隐变量z的形状保持一致，此处扩充均值
-    logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)#此处扩充先验编码器的对数标准差
+    m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)
+    logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)
 
-    z_slice, ids_slice = commons.rand_slice_segments(z, y_lengths, self.segment_size)#对输出的隐变量z进行随机采样切分
-    o = self.dec(z_slice, g=g)#对切分出的隐变量z进行解码，生成波形
-    return o, l_length, attn, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q)
+    z_slice, ids_slice = commons.rand_slice_segments(z, y_lengths, self.segment_size)
+    o = self.dec(z_slice, g=g)
+    return o, l_length, attn, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q), (x, logw, logw_)
 
   def infer(self, x, x_lengths, sid=None, noise_scale=1, length_scale=1, noise_scale_w=1., max_len=None):
-    x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
     if self.n_speakers > 0:
       g = self.emb_g(sid).unsqueeze(-1) # [b, h, 1]
     else:
       g = None
-
+    x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, g=g)
     if self.use_sdp:
       logw = self.dp(x, x_mask, g=g, reverse=True, noise_scale=noise_scale_w)
     else:
@@ -522,12 +971,14 @@ class SynthesizerTrn(nn.Module):#生成器
     o = self.dec((z * y_mask)[:,:,:max_len], g=g)
     return o, attn, y_mask, (z, z_p, m_p, logs_p)
 
-  def voice_conversion(self, y, y_lengths, sid_src, sid_tgt):
-    assert self.n_speakers > 0, "n_speakers have to be larger than 0."
-    g_src = self.emb_g(sid_src).unsqueeze(-1)
-    g_tgt = self.emb_g(sid_tgt).unsqueeze(-1)
-    z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g_src)
-    z_p = self.flow(z, y_mask, g=g_src)
-    z_hat = self.flow(z_p, y_mask, g=g_tgt, reverse=True)
-    o_hat = self.dec(z_hat * y_mask, g=g_tgt)
-    return o_hat, y_mask, (z, z_p, z_hat)
+  ## currently vits-2 is not capable of voice conversion
+  # def voice_conversion(self, y, y_lengths, sid_src, sid_tgt):
+  #   assert self.n_speakers > 0, "n_speakers have to be larger than 0."
+  #   g_src = self.emb_g(sid_src).unsqueeze(-1)
+  #   g_tgt = self.emb_g(sid_tgt).unsqueeze(-1)
+  #   z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g_src)
+  #   z_p = self.flow(z, y_mask, g=g_src)
+  #   z_hat = self.flow(z_p, y_mask, g=g_tgt, reverse=True)
+  #   o_hat = self.dec(z_hat * y_mask, g=g_tgt)
+  #   return o_hat, y_mask, (z, z_p, z_hat)
+
